@@ -147,6 +147,25 @@ g. `error', `warning') and list of LSP TAGS."
         (lsp-diagnostics--flycheck-level level tags)
       level)))
 
+(defun lsp--get-diagnostic-range (diag ovl)
+  (if ovl
+      (save-excursion
+        (goto-char (overlay-start ovl))
+        (let ((line (line-number-at-pos))
+              (col (current-column)))
+          (goto-char (overlay-end ovl))
+          (list :line line :column (1+ col)
+                :end-line (line-number-at-pos)
+                :end-column (unless (equal (overlay-start ovl) (overlay-end ovl))
+                              (1+ (current-column))))))
+    (-let [(&Range :start (start &as &Position :line start-line :character start-character)
+                   :end (end &as &Position :line end-line :character end-character))
+           (lsp:diagnostic-range diag)]
+      (list :line (lsp-translate-line (1+ start-line)) :column (1+ (lsp-translate-column start-character))
+            :end-line (lsp-translate-line (1+ end-line))
+            :end-column (unless (lsp--position-equal start end)
+                          (1+ (lsp-translate-column end-character)))))))
+
 (defun lsp-diagnostics--flycheck-start (checker callback)
   "Start an LSP syntax check with CHECKER.
 
@@ -155,26 +174,18 @@ CALLBACK is the status callback passed by Flycheck."
   (remove-hook 'lsp-on-idle-hook #'lsp-diagnostics--flycheck-buffer t)
 
   (->> (lsp--get-buffer-diagnostics)
-       (-map (-lambda ((&Diagnostic :message :severity? :tags? :code? :source?
-                                    :range (&Range :start (start &as &Position
-                                                                 :line      start-line
-                                                                 :character start-character)
-                                                   :end   (end   &as &Position
-                                                                 :line      end-line
-                                                                 :character end-character))))
-               (flycheck-error-new
-                :buffer (current-buffer)
-                :checker checker
-                :filename buffer-file-name
-                :message message
-                :level (lsp-diagnostics--flycheck-calculate-level severity? tags?)
-                :id code?
-                :group source?
-                :line (lsp-translate-line (1+ start-line))
-                :column (1+ (lsp-translate-column start-character))
-                :end-line (lsp-translate-line (1+ end-line))
-                :end-column (unless (lsp--position-equal start end)
-                              (1+ (lsp-translate-column end-character))))))
+       (-map (-lambda ((&plist :diagnostic (diag &as &Diagnostic :message :severity? :tags? :code? :source?)
+                               :overlay ovl))
+               (let ((diag-range (lsp--get-diagnostic-range diag ovl)))
+                 (apply #'flycheck-error-new
+                  :buffer (current-buffer)
+                  :checker checker
+                  :filename buffer-file-name
+                  :message message
+                  :level (lsp-diagnostics--flycheck-calculate-level severity? tags?)
+                  :id code?
+                  :group source?
+                  diag-range))))
        (funcall callback 'finished)))
 
 (defun lsp-diagnostics--flycheck-buffer ()

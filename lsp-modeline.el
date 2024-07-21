@@ -228,7 +228,7 @@ The `:global' workspace is global one.")
         (i 0))
     (mapc (lambda (buf-diags)
             (mapc (lambda (diag)
-                    (-let [(&Diagnostic? :severity?) diag]
+                    (-let [(&plist :diagnostic (&Diagnostic? :severity?)) diag]
                       (when severity?
                         (cl-incf (aref stats severity?)))))
                   buf-diags))

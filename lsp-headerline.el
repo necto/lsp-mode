@@ -304,7 +304,7 @@ PATH is the current folder to be checked."
 (defun lsp-headerline--severity-level-for-range (range)
   "Get the severity level for RANGE."
   (let ((range-severity 10))
-    (mapc (-lambda ((&Diagnostic :range (&Range :start) :severity?))
+    (mapc (-lambda ((&plist :diagnostic (&Diagnostic :range (&Range :start) :severity?)))
             (when (lsp-point-in-range? start range)
               (setq range-severity (min range-severity severity?))))
           (lsp--get-buffer-diagnostics))

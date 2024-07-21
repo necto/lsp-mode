@@ -2328,7 +2328,8 @@ This is only executed if the server supports pull diagnostics."
             (cl-incf (aref new-stats (or severity? 1))))
           diagnostics)
     (when-let ((old-diags (gethash path (lsp--workspace-diagnostics workspace))))
-      (mapc (-lambda ((&Diagnostic :severity?))
+      ;(message old-diags)
+      (mapc (-lambda ((&plist :diagnostic (&Diagnostic :severity?)))
               (cl-decf (aref new-stats (or severity? 1))))
             old-diags))
     (lsp-diagnostics--update-path path new-stats)
@@ -2351,11 +2352,33 @@ Depends on KIND being a \\='full\\=' update."
     (-let* ((lsp--virtual-buffer-mappings (ht))
             (workspace-diagnostics (lsp--workspace-diagnostics workspace)))
       (if (seq-empty-p diagnostics?)
-          (remhash path workspace-diagnostics)
-        (puthash path (append diagnostics? nil) workspace-diagnostics))
+          (lsp--clear-up-diagnostics-for-file workspace-diagnostics path)
+        (lsp--add-diagnostics-for-file diagnostics? path workspace-diagnostics))
       (run-hooks 'lsp-diagnostics-updated-hook)))
     ((equal kind "unchanged") t)
     (t (lsp--error "Unknown pull diagnostic result kind '%s'" kind))))
+
+;; TODO: make sure it is easy to dispose of these overlays
+(defun lsp--add-overlays-for-diag-ranges (diagnostics)
+  (seq-map (lambda (diag)
+             (let* ((range (lsp-get diag :range))
+                    (start-pos (lsp--position-to-point (lsp-get range :start)))
+                    (end-pos (lsp--position-to-point (lsp-get range :end))))
+               `(:diagnostic ,diag :overlay ,(make-overlay start-pos end-pos))))
+           diagnostics))
+
+(defun lsp--clear-up-diagnostics-for-file (diagnostic-ht path)
+  (let ((diags (gethash path diagnostic-ht)))
+    (mapc (-lambda ((&plist :diagnostic (&Diagnostic :range :severity? :message)))
+            (delete-overlay (plist-get diagnostic :overlay)))
+          diags)
+    (remhash path diagnostic-ht)))
+
+(defun lsp--add-diagnostics-for-file (diagnostic-seq path diagnostics-ht)
+  (let ((diags (lsp--add-overlays-for-diag-ranges diagnostic-seq)))
+    (puthash path diags diagnostics-ht)
+    ;???(run-hooks 'lsp-diagnostics-updated-hook)
+    ))
 
 (defun lsp--on-diagnostics (workspace params)
   "Callback for textDocument/publishDiagnostics.
@@ -2376,15 +2399,16 @@ WORKSPACE is the workspace that contains the diagnostics."
           (workspace-diagnostics (lsp--workspace-diagnostics workspace)))
 
     (if (seq-empty-p diagnostics)
-        (remhash file workspace-diagnostics)
-      (puthash file (append diagnostics nil) workspace-diagnostics))
+        (lsp--clear-up-diagnostics-for-file workspace-diagnostics file)
+      (lsp--add-diagnostics-for-file diagnostics file workspace-diagnostics))
 
     (run-hooks 'lsp-diagnostics-updated-hook)))
 
 (defun lsp-diagnostics--workspace-cleanup (workspace)
   (->> workspace
        (lsp--workspace-diagnostics)
-       (maphash (lambda (key _)
+       (maphash (lambda (key diag-and-ovl)
+                  (delete-overlay (plist-get diag-and-ovl :overlay))
                   (lsp--on-diagnostics-update-stats
                    workspace
                    (lsp-make-publish-diagnostics-params
@@ -4931,8 +4955,9 @@ Added to `after-change-functions'."
   ;; cleanup diagnostics
   (when lsp-diagnostic-clean-after-change
     (dolist (workspace (lsp-workspaces))
-      (-let [diagnostics (lsp--workspace-diagnostics workspace)]
-        (remhash (lsp--fix-path-casing (buffer-file-name)) diagnostics))))
+      (-let ((diagnostics (lsp--workspace-diagnostics workspace))
+             (fname (lsp--fix-path-casing (buffer-file-name))))
+        (lsp--clear-up-diagnostics-for-file diagnostics fname))))
 
   (when (fboundp 'lsp--semantic-tokens-refresh-if-enabled)
     (lsp--semantic-tokens-refresh-if-enabled buffer))
@@ -5166,7 +5191,7 @@ identifier and the position respectively."
   "Return any diagnostics that apply to the current line."
   (-let [(&plist :start (&plist :line start) :end (&plist :line end)) (lsp--region-or-line)]
     (cl-coerce (-filter
-                (-lambda ((&Diagnostic :range (&Range :start (&Position :line))))
+                (-lambda ((&plist :diagnostic (&Diagnostic :range (&Range :start (&Position :line)))))
                   (and (>= line start) (<= line end)))
                 (lsp--get-buffer-diagnostics))
                'vector)))
@@ -5189,6 +5214,9 @@ identifier and the position respectively."
           (current-range (lsp-make-range :start (lsp-make-position-1 (lsp-point-to-position start))
                                          :end (lsp-make-position-1 (lsp-point-to-position end)))))
     (->> (lsp--get-buffer-diagnostics)
+         (-map
+          (-lambda ((&plist :diagnostic))
+            diagnostic))
          (-filter
           (-lambda ((&Diagnostic :range))
             (lsp-range-overlapping? range current-range)))
